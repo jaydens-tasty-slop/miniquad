@@ -75,6 +75,46 @@ impl X11DnD {
         }
     }
 
+    /// Tells the source the drop is done, once its data has arrived. XDND
+    /// asks for XdndFinished then; without it the source may wait on the
+    /// drag (and leave its drag cursor up) until it times out.
+    pub unsafe fn finish(
+        &mut self,
+        libx11: &mut LibX11,
+        display: *mut Display,
+        window: Window,
+        accepted: bool,
+    ) {
+        if self.version < 2 || self.source == 0 {
+            return;
+        }
+        let action = if accepted {
+            libx11.extensions.xdnd_action_copy as _
+        } else {
+            0
+        };
+        let mut reply = XClientMessageEvent {
+            type_0: ClientMessage,
+            serial: 0,
+            send_event: true as _,
+            message_type: libx11.extensions.xdnd_finished,
+            window: self.source,
+            display,
+            format: 32,
+            data: ClientMessageData {
+                l: [window as _, accepted as _, action, 0, 0],
+            },
+        };
+        (libx11.XSendEvent)(
+            display,
+            self.source,
+            false as _,
+            NoEventMask,
+            &mut reply as *mut XClientMessageEvent as *mut _,
+        );
+        (libx11.XFlush)(display);
+    }
+
     pub unsafe fn on_position(
         &mut self,
         libx11: &mut LibX11,

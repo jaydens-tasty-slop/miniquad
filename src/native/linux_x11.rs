@@ -210,6 +210,13 @@ impl X11Display {
                         self.window,
                         p,
                     );
+                    let window = self.window;
+                    self.drag_n_drop.finish(
+                        &mut self.libx11,
+                        self.display,
+                        window,
+                        !bytes.is_empty(),
+                    );
                     if let Ok(filenames) = std::str::from_utf8(&bytes) {
                         let mut d = crate::native_display().try_lock().unwrap();
                         d.dropped_files = Default::default();
