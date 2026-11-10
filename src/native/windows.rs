@@ -1155,15 +1155,40 @@ where
     F: 'static + FnOnce() -> Box<dyn EventHandler>,
 {
     unsafe {
-        if conf.high_dpi {
+        // With high_dpi the configured size is in points, as on macOS. Once
+        // the process is DPI aware, window sizes are pixels, so scale it by
+        // the primary monitor's DPI, keeping the window within 90% of the
+        // screen.
+        let (width, height) = if conf.high_dpi {
             SetProcessDPIAware();
-        }
+            let hm = MonitorFromPoint(POINT { x: 1, y: 1 }, MONITOR_DEFAULTTONEAREST);
+            let mut dpix: UINT = 96;
+            let mut dpiy: UINT = 96;
+            let hr = GetDpiForMonitor(
+                hm,
+                MDT_EFFECTIVE_DPI,
+                &mut dpix as *mut _ as _,
+                &mut dpiy as *mut _ as _,
+            );
+            let scale = if hr == 0 { dpix as f32 / 96.0 } else { 1.0 }.max(1.0);
+            let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+            let fit = (sw as f32 * 0.9 / conf.window_width as f32)
+                .min(sh as f32 * 0.9 / conf.window_height as f32)
+                .max(1.0);
+            let s = scale.min(fit);
+            (
+                (conf.window_width as f32 * s).round() as i32,
+                (conf.window_height as f32 * s).round() as i32,
+            )
+        } else {
+            (conf.window_width, conf.window_height)
+        };
         let (wnd, dc) = create_window(
             &conf.window_title,
             conf.fullscreen,
             conf.window_resizable,
-            conf.window_width as _,
-            conf.window_height as _,
+            width as _,
+            height as _,
         );
         if let Some(icon) = &conf.icon {
             set_icon(wnd, icon);

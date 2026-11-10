@@ -202,13 +202,31 @@ impl LibX11 {
             | PropertyChangeMask;
         self.grab_error_handler();
 
+        // With high_dpi the configured size is in points, as on macOS. X11
+        // sizes are pixels, so scale it by Xft.dpi, keeping the window within
+        // 90% of the screen.
+        let (width, height) = if conf.high_dpi {
+            let scale = self.update_system_dpi(display).max(1.0);
+            let (sw, sh) = self.query_window_size(display, root);
+            let fit = (sw as f32 * 0.9 / conf.window_width as f32)
+                .min(sh as f32 * 0.9 / conf.window_height as f32)
+                .max(1.0);
+            let s = scale.min(fit);
+            (
+                (conf.window_width as f32 * s).round() as i32,
+                (conf.window_height as f32 * s).round() as i32,
+            )
+        } else {
+            (conf.window_width, conf.window_height)
+        };
+
         let window = (self.XCreateWindow)(
             display,
             root,
             0 as libc::c_int,
             0 as libc::c_int,
-            conf.window_width as _,
-            conf.window_height as _,
+            width as _,
+            height as _,
             0 as libc::c_int as libc::c_uint,
             depth,
             InputOutput as libc::c_uint,
@@ -225,10 +243,10 @@ impl LibX11 {
         (*hints).flags |= PWinGravity;
         if !conf.window_resizable {
             (*hints).flags |= PMinSize | PMaxSize;
-            (*hints).min_width = conf.window_width;
-            (*hints).min_height = conf.window_height;
-            (*hints).max_width = conf.window_width;
-            (*hints).max_height = conf.window_height;
+            (*hints).min_width = width;
+            (*hints).min_height = height;
+            (*hints).max_width = width;
+            (*hints).max_height = height;
         }
         (*hints).win_gravity = StaticGravity;
         (self.XSetWMNormalHints)(display, window, hints);
