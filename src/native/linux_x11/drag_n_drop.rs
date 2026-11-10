@@ -166,3 +166,55 @@ impl X11DnD {
         }
     }
 }
+
+/// The paths in a dropped file list. `text/uri-list` lines are `file://`
+/// URIs, percent-encoded (a space arrives as `%20`), CRLF-separated, with
+/// `#` comment lines; the host part may be `localhost`. `UTF8_STRING` drops
+/// are usually the same URIs, sometimes bare paths.
+pub(crate) fn dropped_paths(text: &str) -> Vec<std::path::PathBuf> {
+    text.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let rest = match l.strip_prefix("file://") {
+                // file:///path, or file://localhost/path
+                Some(r) => &r[r.find('/')?..],
+                None if l.starts_with('/') => l,
+                None => return None,
+            };
+            let b = rest.as_bytes();
+            let mut out = Vec::with_capacity(b.len());
+            let mut i = 0;
+            while i < b.len() {
+                let hex = |c: u8| (c as char).to_digit(16);
+                if b[i] == b'%' && i + 2 < b.len() {
+                    if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                        out.push((h * 16 + l) as u8);
+                        i += 3;
+                        continue;
+                    }
+                }
+                out.push(b[i]);
+                i += 1;
+            }
+            Some(std::path::PathBuf::from(String::from_utf8(out).ok()?))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    #[test]
+    fn dropped_paths() {
+        let list = "# from a file manager\r\n\
+                    file:///home/a/rock%20box.tar.xz\r\n\
+                    file://localhost/tmp/x\r\n\
+                    /plain/path\n";
+        assert_eq!(
+            super::dropped_paths(list),
+            ["/home/a/rock box.tar.xz", "/tmp/x", "/plain/path"].map(PathBuf::from)
+        );
+    }
+}
