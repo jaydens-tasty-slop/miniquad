@@ -37,6 +37,9 @@ pub struct GlCache {
     pub textures: [CachedTexture; MAX_SHADERSTAGE_IMAGES],
     pub cur_pipeline: Option<Pipeline>,
     pub cur_pass: Option<RenderPass>,
+    /// A multisampled pass that ended without resolving it yet
+    /// (see `GlContext::end_render_pass`)
+    pub pending_resolve: Option<RenderPass>,
     pub color_blend: Option<BlendState>,
     pub alpha_blend: Option<BlendState>,
     pub stencil: Option<StencilState>,

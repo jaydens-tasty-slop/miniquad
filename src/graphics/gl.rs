@@ -557,6 +557,7 @@ impl GlContext {
                     vertex_buffer: 0,
                     cur_pipeline: None,
                     cur_pass: None,
+                    pending_resolve: None,
                     color_blend: None,
                     alpha_blend: None,
                     stencil: None,
@@ -881,6 +882,42 @@ fn gl_info() -> ContextInfo {
     }
 }
 
+impl GlContext {
+    /// Resolves the multisampled pass left pending by `end_render_pass` into
+    /// its resolve textures.
+    fn resolve_pending(&mut self) {
+        let Some(pass) = self.cache.pending_resolve.take() else {
+            return;
+        };
+        unsafe {
+            let pass = &self.passes[pass.0];
+            if let Some(resolves) = &pass.resolves {
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, pass.gl_fb);
+                for (i, (resolve_fb, resolve_img)) in resolves.iter().enumerate() {
+                    let texture = self.textures.get(*resolve_img);
+                    let w = texture.params.width;
+                    let h = texture.params.height;
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, *resolve_fb);
+                    glReadBuffer(GL_COLOR_ATTACHMENT0 + i as u32);
+                    glBlitFramebuffer(
+                        0,
+                        0,
+                        w as _,
+                        h as _,
+                        0,
+                        0,
+                        w as _,
+                        h as _,
+                        GL_COLOR_BUFFER_BIT,
+                        GL_NEAREST,
+                    );
+                }
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, self.default_framebuffer);
+        }
+    }
+}
+
 impl RenderingBackend for GlContext {
     fn info(&self) -> ContextInfo {
         self.info.clone()
@@ -1015,6 +1052,7 @@ impl RenderingBackend for GlContext {
         };
     }
     fn texture_read_pixels(&mut self, texture: TextureId, source: &mut [u8]) {
+        self.resolve_pending();
         let t = self.textures.get(texture);
         t.read_pixels(source);
     }
@@ -1160,6 +1198,9 @@ impl RenderingBackend for GlContext {
         &self.passes[render_pass.0].color_textures
     }
     fn delete_render_pass(&mut self, render_pass: RenderPass) {
+        if self.cache.pending_resolve == Some(render_pass) {
+            self.cache.pending_resolve = None;
+        }
         let pass_id = render_pass.0;
 
         let render_pass = self.passes.remove(pass_id);
@@ -1634,6 +1675,12 @@ impl RenderingBackend for GlContext {
     }
 
     fn begin_pass(&mut self, pass: Option<RenderPass>, action: PassAction) {
+        // Drawing on into the pass that ended last needs no resolve in
+        // between; any other pass gets it resolved first.
+        if self.cache.pending_resolve.is_some() && self.cache.pending_resolve != pass {
+            self.resolve_pending();
+        }
+        self.cache.pending_resolve = None;
         self.cache.cur_pass = pass;
         let (framebuffer, w, h) = match pass {
             None => {
@@ -1681,32 +1728,20 @@ impl RenderingBackend for GlContext {
 
     fn end_render_pass(&mut self) {
         unsafe {
-            if let Some(pass) = self.cache.cur_pass.take() {
-                let pass = &self.passes[pass.0];
-                if let Some(resolves) = &pass.resolves {
-                    glBindFramebuffer(GL_READ_FRAMEBUFFER, pass.gl_fb);
-                    for (i, (resolve_fb, resolve_img)) in resolves.iter().enumerate() {
-                        let texture = self.textures.get(*resolve_img);
-                        let w = texture.params.width;
-                        let h = texture.params.height;
-                        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, *resolve_fb);
-                        glReadBuffer(GL_COLOR_ATTACHMENT0 + i as u32);
-                        glBlitFramebuffer(
-                            0,
-                            0,
-                            w as _,
-                            h as _,
-                            0,
-                            0,
-                            w as _,
-                            h as _,
-                            GL_COLOR_BUFFER_BIT,
-                            GL_NEAREST,
-                        );
-                    }
+            // A multisampled pass is resolved when another pass begins, its
+            // pixels are read, it is deleted or the frame ends, not here:
+            // macroquad begins and ends a pass per draw call, and resolving at
+            // every end blits the whole target once per draw.
+            let deferred = match self.cache.cur_pass.take() {
+                Some(pass) if self.passes[pass.0].resolves.is_some() => {
+                    self.cache.pending_resolve = Some(pass);
+                    true
                 }
+                _ => false,
+            };
+            if !deferred {
+                glBindFramebuffer(GL_FRAMEBUFFER, self.default_framebuffer);
             }
-            glBindFramebuffer(GL_FRAMEBUFFER, self.default_framebuffer);
             self.cache.bind_buffer(GL_ARRAY_BUFFER, 0, None);
             self.cache.bind_buffer(GL_ELEMENT_ARRAY_BUFFER, 0, None);
 
@@ -1718,6 +1753,7 @@ impl RenderingBackend for GlContext {
     }
 
     fn commit_frame(&mut self) {
+        self.resolve_pending();
         self.cache.clear_buffer_bindings();
         self.cache.clear_texture_bindings();
     }
